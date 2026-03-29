@@ -1,7 +1,8 @@
 import { useState, useMemo } from 'react';
 import { ProcessedDataset, ColumnProfile, VisualizationConfig } from '../lib/dataProcessor';
 import { UniversalChart } from './Charts';
-import { Download, TrendingUp, BarChart3, Hash, Calendar, Type, Binary, Fingerprint, GitCompareArrows, ChevronDown } from 'lucide-react';
+import { Download, BarChart3, Hash, Calendar, Type, Binary, Fingerprint, GitCompareArrows, ChevronDown } from 'lucide-react';
+import { InsightLayer } from './InsightLayer';
 
 interface DashboardProps {
   processedData: ProcessedDataset;
@@ -221,6 +222,9 @@ export function Dashboard({ processedData, visualizations, onExport }: Dashboard
         </div>
       </div>
 
+      {/* Workshop Insight Layer */}
+      <InsightLayer processedData={processedData}/>
+
       {/* Column Type Overview */}
       {processedData.columnProfiles?.length > 0 && (
         <div className="bg-gray-800 rounded-xl p-6 border border-gray-700">
@@ -364,29 +368,6 @@ export function Dashboard({ processedData, visualizations, onExport }: Dashboard
               </p>
             </div>
           )}
-        </div>
-      )}
-
-      {/* Insights */}
-      {processedData.insights.length > 0 && (
-        <div className="bg-gray-800 rounded-xl p-6 border border-gray-700">
-          <div className="flex items-center gap-2 mb-4">
-            <TrendingUp className="w-5 h-5 text-green-400"/>
-            <h3 className="text-lg font-semibold text-gray-100">Key Insights</h3>
-          </div>
-          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
-            {processedData.insights.slice(0,8).map((insight, i) => (
-              <div key={i} className="bg-gray-900 rounded-lg p-3 border border-gray-700">
-                <p className="text-xs text-gray-400 mb-1 truncate">{insight.title}</p>
-                <p className="text-xl font-bold text-gray-100 truncate">{String(insight.value)}</p>
-                {insight.change !== undefined && (
-                  <span className={`text-xs font-medium ${insight.change > 0 ? 'text-green-400' : insight.change < 0 ? 'text-red-400' : 'text-gray-500'}`}>
-                    {insight.change > 0 ? '▲' : '▼'} {Math.abs(insight.change).toFixed(2)}
-                  </span>
-                )}
-              </div>
-            ))}
-          </div>
         </div>
       )}
 
