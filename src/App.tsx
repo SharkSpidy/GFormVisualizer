@@ -39,14 +39,13 @@ function App() {
   };
 
   const signInAnonymously = async () => {
-    const { data, error } = await supabase.auth.signUp({
-      email: `user-${Date.now()}-${Math.random().toString(36).substr(2, 9)}@temp.local`,
-      password: Math.random().toString(36).substr(2, 15) + Math.random().toString(36).substr(2, 15)
-    });
+    const { data, error } = await supabase.auth.signInAnonymously();
 
     if (!error && data.user) {
       setIsAuthenticated(true);
       setUserId(data.user.id);
+    } else {
+      console.error("Auth error:", error);
     }
   };
 
