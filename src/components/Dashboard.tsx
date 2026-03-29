@@ -27,28 +27,95 @@ const TYPE_COLOR: Record<string, string> = {
   id: 'text-gray-400',
 };
 
+type ChartType = 'bar' | 'line' | 'pie' | 'scatter' | 'histogram' | 'table';
+
+interface ChartOption {
+  type: ChartType;
+  label: string;
+  icon: string;
+  description: string;
+}
+
+const ALL_CHART_OPTIONS: ChartOption[] = [
+  { type: 'bar',       label: 'Bar',       icon: '▬', description: 'Compare values across categories' },
+  { type: 'line',      label: 'Line',      icon: '╱', description: 'Show trends across ordered data' },
+  { type: 'pie',       label: 'Pie',       icon: '◕', description: 'Show proportions of a whole' },
+  { type: 'scatter',   label: 'Scatter',   icon: '⠿', description: 'Reveal correlations between two numbers' },
+  { type: 'histogram', label: 'Histogram', icon: '▤', description: 'Show value distribution in buckets' },
+  { type: 'table',     label: 'Table',     icon: '⊞', description: 'Display raw data in a grid' },
+];
+
+/** Which chart types make sense for each column-pair combination */
+function compatibleChartTypes(
+  profA: ColumnProfile | null,
+  profB: ColumnProfile | null
+): ChartType[] {
+  if (!profA || !profB) return [];
+  const aNum = profA.type === 'numeric';
+  const bNum = profB.type === 'numeric';
+  const aCat = profA.type === 'categorical' || profA.type === 'boolean';
+  const bCat = profB.type === 'categorical' || profB.type === 'boolean';
+
+  if (aNum && bNum) return ['scatter', 'line', 'bar', 'histogram', 'table'];
+  if ((aCat && bNum) || (aNum && bCat)) return ['bar', 'line', 'pie', 'table'];
+  if (aCat && bCat) return ['table', 'bar'];
+  return ['table'];
+}
+
+/** Build the viz data for ANY chart type the user picks */
 function buildComparisonViz(
   colA: ColumnProfile,
   colB: ColumnProfile,
-  data: any[]
+  data: any[],
+  chartType: ChartType
 ): VisualizationConfig | null {
   const a = colA, b = colB;
+  const aNum = a.type === 'numeric';
+  const bNum = b.type === 'numeric';
+  const aCat = a.type === 'categorical' || a.type === 'boolean';
+  const bCat = b.type === 'categorical' || b.type === 'boolean';
 
-  // numeric vs numeric → scatter
-  if (a.type === 'numeric' && b.type === 'numeric') {
+  // ── scatter ──────────────────────────────────────────────
+  if (chartType === 'scatter') {
     const pts = data
       .map(r => ({ x: Number(r[a.name]), y: Number(r[b.name]) }))
       .filter(p => !isNaN(p.x) && !isNaN(p.y))
       .slice(0, 500);
     if (pts.length < 2) return null;
     return { id: 'cmp', type: 'scatter', title: `${a.name} vs ${b.name}`,
-      description: 'Scatter — each dot is one row', data: pts, xKey: a.name, yKey: b.name, priority: 0 };
+      description: 'Each dot represents one row', data: pts, xKey: a.name, yKey: b.name, priority: 0 };
   }
 
-  // categorical vs numeric → grouped bar (avg numeric per category)
+  // ── histogram: use numeric column ────────────────────────
+  if (chartType === 'histogram') {
+    const numCol = aNum ? a : bNum ? b : null;
+    if (!numCol) return null;
+    const vals = data.map(r => Number(r[numCol.name])).filter(n => !isNaN(n));
+    const min = Math.min(...vals), max = Math.max(...vals), bins = 10;
+    const step = (max - min) / bins || 1;
+    const buckets = Array.from({ length: bins }, (_, i) => {
+      const lo = min + i * step, hi = lo + step;
+      return { range: `${lo.toFixed(1)}–${hi.toFixed(1)}`, count: vals.filter(v => v >= lo && (i === bins - 1 ? v <= hi : v < hi)).length };
+    }).filter(b => b.count > 0);
+    return { id: 'cmp', type: 'histogram', title: `${numCol.name} Distribution`,
+      description: `Bucketed frequency across ${bins} bins`, data: buckets, xKey: 'range', yKey: 'count', priority: 0 };
+  }
+
+  // ── numeric × numeric: bar / line of one vs the other ───
+  if (aNum && bNum && (chartType === 'bar' || chartType === 'line')) {
+    const pts = data
+      .map(r => ({ [a.name]: Number(r[a.name]), [b.name]: Number(r[b.name]) }))
+      .filter(p => !isNaN(p[a.name]) && !isNaN(p[b.name]))
+      .slice(0, 100);
+    if (pts.length < 2) return null;
+    return { id: 'cmp', type: chartType, title: `${a.name} vs ${b.name}`,
+      description: 'First 100 rows shown', data: pts, xKey: a.name, yKey: b.name, priority: 0 };
+  }
+
+  // ── cat × num: group by category, aggregate numeric ─────
   const [catCol, numCol] =
-    (a.type === 'categorical' || a.type === 'boolean') && b.type === 'numeric' ? [a, b] :
-    (b.type === 'categorical' || b.type === 'boolean') && a.type === 'numeric' ? [b, a] :
+    (aCat && bNum) ? [a, b] :
+    (aNum && bCat) ? [b, a] :
     [null, null];
 
   if (catCol && numCol) {
@@ -58,16 +125,24 @@ function buildComparisonViz(
       const val = Number(r[numCol.name]);
       if (!isNaN(val)) { if (!grouped.has(cat)) grouped.set(cat, []); grouped.get(cat)!.push(val); }
     });
-    const barData = [...grouped.entries()]
+    const agg = [...grouped.entries()]
       .map(([name, vals]) => ({ name, avg: parseFloat((vals.reduce((s, v) => s + v, 0) / vals.length).toFixed(2)), count: vals.length }))
-      .sort((a, b) => b.avg - a.avg).slice(0, 15);
-    if (barData.length < 2) return null;
-    return { id: 'cmp', type: 'bar', title: `Avg ${numCol.name} by ${catCol.name}`,
-      description: `Average of "${numCol.name}" for each "${catCol.name}" value`, data: barData, xKey: 'name', yKey: 'avg', priority: 0 };
+      .sort((x, y) => y.avg - x.avg).slice(0, 15);
+    if (agg.length < 2) return null;
+
+    if (chartType === 'pie') {
+      const pieData = agg.map(d => ({ name: d.name, value: d.avg }));
+      return { id: 'cmp', type: 'pie', title: `${numCol.name} share by ${catCol.name}`,
+        description: `Proportional average of "${numCol.name}" per category`, data: pieData, xKey: 'name', yKey: 'value', priority: 0 };
+    }
+    return { id: 'cmp', type: chartType === 'line' ? 'line' : 'bar',
+      title: `Avg ${numCol.name} by ${catCol.name}`,
+      description: `Average "${numCol.name}" per "${catCol.name}" value`,
+      data: agg, xKey: 'name', yKey: 'avg', priority: 0 };
   }
 
-  // categorical vs categorical → stacked / grouped counts as bar
-  if ((a.type === 'categorical' || a.type === 'boolean') && (b.type === 'categorical' || b.type === 'boolean')) {
+  // ── cat × cat: cross-tab table / bar of top pair ────────
+  if (aCat && bCat) {
     const topA = (a.topValues ?? []).slice(0, 8).map(t => t.value);
     const topB = (b.topValues ?? []).slice(0, 6).map(t => t.value);
     const matrix: Record<string, Record<string, number>> = {};
@@ -76,10 +151,19 @@ function buildComparisonViz(
       const va = String(r[a.name] ?? ''), vb = String(r[b.name] ?? '');
       if (matrix[va] && topB.includes(vb)) matrix[va][vb]++;
     });
-    const tableData = topA.map(va => ({ name: va, ...matrix[va] }));
-    if (tableData.length < 2) return null;
+
+    if (chartType === 'bar') {
+      // flatten to top-combo bar
+      const combos: { name: string; count: number }[] = [];
+      topA.forEach(va => topB.forEach(vb => combos.push({ name: `${va} / ${vb}`, count: matrix[va][vb] })));
+      combos.sort((x, y) => y.count - x.count);
+      return { id: 'cmp', type: 'bar', title: `${a.name} × ${b.name} Combinations`,
+        description: 'Count of each category pair', data: combos.slice(0, 15), xKey: 'name', yKey: 'count', priority: 0 };
+    }
+
+    const tableData = topA.map(va => ({ [a.name]: va, ...matrix[va] }));
     return { id: 'cmp', type: 'table', title: `${a.name} × ${b.name} Cross-tab`,
-      description: `Counts for each combination`, data: tableData, xKey: 'name', yKey: '', priority: 0 };
+      description: 'Count for each combination', data: tableData, xKey: 'name', yKey: '', priority: 0 };
   }
 
   return null;
@@ -94,14 +178,24 @@ export function Dashboard({ processedData, visualizations, onExport }: Dashboard
   const comparableColumns = columns.filter(c => c.type !== 'id' && c.type !== 'text' && c.type !== 'date');
   const [colA, setColA] = useState<string>('');
   const [colB, setColB] = useState<string>('');
+  const [chartType, setChartType] = useState<ChartType | ''>('');
+
+  const profA = useMemo(() => columns.find(c => c.name === colA) ?? null, [columns, colA]);
+  const profB = useMemo(() => columns.find(c => c.name === colB) ?? null, [columns, colB]);
+
+  const compatibleTypes = useMemo(() => compatibleChartTypes(profA, profB), [profA, profB]);
+
+  // Auto-pick default chart type whenever compatible types change
+  const effectiveChartType: ChartType | '' = useMemo(() => {
+    if (!compatibleTypes.length) return '';
+    if (chartType && compatibleTypes.includes(chartType)) return chartType;
+    return compatibleTypes[0];
+  }, [compatibleTypes, chartType]);
 
   const comparisonViz = useMemo(() => {
-    if (!colA || !colB || colA === colB) return null;
-    const profA = columns.find(c => c.name === colA);
-    const profB = columns.find(c => c.name === colB);
-    if (!profA || !profB) return null;
-    return buildComparisonViz(profA, profB, processedData.originalData);
-  }, [colA, colB, columns, processedData.originalData]);
+    if (!profA || !profB || !effectiveChartType) return null;
+    return buildComparisonViz(profA, profB, processedData.originalData, effectiveChartType);
+  }, [profA, profB, effectiveChartType, processedData.originalData]);
 
   return (
     <div className="w-full space-y-6">
@@ -150,19 +244,20 @@ export function Dashboard({ processedData, visualizations, onExport }: Dashboard
       {/* Column Comparison */}
       {comparableColumns.length >= 2 && (
         <div className="bg-gray-800 rounded-xl p-6 border border-gray-700">
-          <div className="flex items-center gap-2 mb-4">
+          <div className="flex items-center gap-2 mb-5">
             <GitCompareArrows className="w-5 h-5 text-blue-400"/>
             <h3 className="text-lg font-semibold text-gray-100">Compare Columns</h3>
-            <span className="text-xs text-gray-500 ml-1">— pick any two columns to visualize their relationship</span>
+            <span className="text-xs text-gray-500 ml-1">— pick two columns and a chart type</span>
           </div>
 
+          {/* Row 1: Column selectors */}
           <div className="flex flex-wrap gap-3 items-end mb-5">
             <div className="flex-1 min-w-[180px]">
               <label className="block text-xs text-gray-400 mb-1.5 font-medium">Column A</label>
               <div className="relative">
                 <select
                   value={colA}
-                  onChange={e => setColA(e.target.value)}
+                  onChange={e => { setColA(e.target.value); setChartType(''); }}
                   className="w-full appearance-none bg-gray-900 border border-gray-600 text-gray-200 rounded-lg px-3 py-2.5 pr-8 text-sm focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 cursor-pointer"
                 >
                   <option value="">Select column…</option>
@@ -183,7 +278,7 @@ export function Dashboard({ processedData, visualizations, onExport }: Dashboard
               <div className="relative">
                 <select
                   value={colB}
-                  onChange={e => setColB(e.target.value)}
+                  onChange={e => { setColB(e.target.value); setChartType(''); }}
                   className="w-full appearance-none bg-gray-900 border border-gray-600 text-gray-200 rounded-lg px-3 py-2.5 pr-8 text-sm focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 cursor-pointer"
                 >
                   <option value="">Select column…</option>
@@ -199,13 +294,49 @@ export function Dashboard({ processedData, visualizations, onExport }: Dashboard
 
             {(colA || colB) && (
               <button
-                onClick={() => { setColA(''); setColB(''); }}
+                onClick={() => { setColA(''); setColB(''); setChartType(''); }}
                 className="pb-0.5 text-xs text-gray-500 hover:text-gray-300 transition-colors underline underline-offset-2 whitespace-nowrap"
               >
                 Clear
               </button>
             )}
           </div>
+
+          {/* Row 2: Chart type pills — only shown when both columns are selected */}
+          {colA && colB && colA !== colB && compatibleTypes.length > 0 && (
+            <div className="mb-5">
+              <p className="text-xs text-gray-400 font-medium mb-2">Chart Type</p>
+              <div className="flex flex-wrap gap-2">
+                {ALL_CHART_OPTIONS.map(opt => {
+                  const isCompat = compatibleTypes.includes(opt.type);
+                  const isActive = effectiveChartType === opt.type;
+                  return (
+                    <button
+                      key={opt.type}
+                      disabled={!isCompat}
+                      onClick={() => setChartType(opt.type)}
+                      title={isCompat ? opt.description : `Not compatible with these column types`}
+                      className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium border transition-all
+                        ${isActive
+                          ? 'bg-blue-600 border-blue-500 text-white shadow-lg shadow-blue-900/40'
+                          : isCompat
+                            ? 'bg-gray-900 border-gray-600 text-gray-300 hover:border-blue-500 hover:text-blue-300'
+                            : 'bg-gray-900/40 border-gray-700 text-gray-600 cursor-not-allowed opacity-50'
+                        }`}
+                    >
+                      <span className="text-base leading-none">{opt.icon}</span>
+                      {opt.label}
+                    </button>
+                  );
+                })}
+              </div>
+              {effectiveChartType && (
+                <p className="text-xs text-gray-600 mt-2">
+                  {ALL_CHART_OPTIONS.find(o => o.type === effectiveChartType)?.description}
+                </p>
+              )}
+            </div>
+          )}
 
           {/* Result area */}
           {!colA || !colB ? (
@@ -228,7 +359,7 @@ export function Dashboard({ processedData, visualizations, onExport }: Dashboard
           ) : (
             <div className="border-2 border-dashed border-gray-700 rounded-xl p-6 text-center">
               <p className="text-gray-500 text-sm">
-                Can't generate a meaningful comparison for these two column types yet.
+                Can't generate a meaningful comparison for these two column types.
                 Try combining a <span className="text-gray-300">numeric</span> column with a <span className="text-gray-300">categorical</span> one, or two <span className="text-gray-300">numeric</span> columns.
               </p>
             </div>
